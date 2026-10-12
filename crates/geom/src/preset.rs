@@ -378,6 +378,25 @@ pub fn mitred_by_default(name: &str) -> bool {
     ) || name.starts_with("actionButton")
 }
 
+/// The presets whose adjust guides start at `adj1` in their ECMA-376
+/// definition — the only six in the catalog: every other single-guide preset
+/// names its lone guide `adj`, and further guides are always `adj2`, `adj3`, ….
+/// Writing `adj` for these makes PowerPoint refuse the whole file (issue #214).
+const FIRST_GUIDE_ADJ1: &[&str] = &["bentConnector3", "curvedConnector3", "frame", "mathMinus", "mathMultiply", "mathPlus"];
+
+/// The canonical name of the i-th of `total` adjust guides written for
+/// `preset` (ECMA-376 preset definitions). Presets whose definition has no
+/// adjust guides, and unknown presets, fall back to the value count: a lone
+/// value is `adj`, further values `adj1`, `adj2`, ….
+pub fn guide_name(preset: &str, i: usize, total: usize) -> String {
+    let lone = match info(preset) {
+        Some(p) if p.defaults.is_empty() => total == 1,
+        Some(p) => p.defaults.len() == 1,
+        None => total == 1,
+    };
+    if lone && i == 0 && !FIRST_GUIDE_ADJ1.contains(&preset) { "adj".to_string() } else { format!("adj{}", i + 1) }
+}
+
 pub fn is_line_like(name: &str) -> bool {
     matches!(name, "line" | "straightConnector1" | "bentConnector2" | "bentConnector3" | "curvedConnector3" | "arc")
         || name.starts_with("bentConnector")
@@ -2210,6 +2229,57 @@ mod tests {
         names.dedup();
         assert_eq!(n, names.len());
         assert!(n >= 140, "catalog has {n} presets");
+    }
+
+    /// Guide names come from the ECMA-376 preset definitions, not from the
+    /// guide count: exactly six presets name their first adjust guide `adj1`,
+    /// and PowerPoint refuses files that call it `adj` (issue #214). The
+    /// expected names here are spelled out independently of FIRST_GUIDE_ADJ1,
+    /// so a wrong table entry fails this test.
+    #[test]
+    fn guide_names_come_from_the_preset_definition() {
+        const ADJ1_FIRST: [&str; 6] = ["bentConnector3", "curvedConnector3", "frame", "mathMinus", "mathMultiply", "mathPlus"];
+        let mut table: Vec<&str> = FIRST_GUIDE_ADJ1.to_vec();
+        table.sort_unstable();
+        assert_eq!(table, ADJ1_FIRST);
+        for p in ADJ1_FIRST {
+            assert_eq!(guide_name(p, 0, 1), "adj1", "{p}");
+            assert_eq!(guide_name(p, 1, 2), "adj2", "{p}");
+        }
+        // Every other one-default preset names its guide `adj` — swept over the
+        // whole catalog, so a preset with an `adj1` definition cannot be added
+        // to the catalog without updating FIRST_GUIDE_ADJ1.
+        for p in CATALOG {
+            if p.defaults.len() != 1 || ADJ1_FIRST.contains(&p.name) {
+                continue;
+            }
+            assert_eq!(guide_name(p.name, 0, 1), "adj", "{}", p.name);
+        }
+        // Table entries are real presets with exactly one default.
+        for name in FIRST_GUIDE_ADJ1 {
+            let p = info(name).unwrap_or_else(|| panic!("{name} is not in the catalog"));
+            assert_eq!(p.defaults.len(), 1, "{name}");
+        }
+        // Several guides are adj1…adjN for every multi-guide preset.
+        assert_eq!(guide_name("rightArrow", 0, 2), "adj1");
+        assert_eq!(guide_name("rightArrow", 2, 3), "adj3");
+        // Presets without adjust guides and unknown presets fall back to the count.
+        assert_eq!(guide_name("line", 0, 1), "adj");
+        assert_eq!(guide_name("line", 1, 2), "adj2");
+        assert_eq!(guide_name("noSuchPreset", 0, 1), "adj");
+        assert_eq!(guide_name("noSuchPreset", 1, 2), "adj2");
+        // A one-guide preset given extra values keeps its canonical names.
+        assert_eq!(guide_name("bentConnector3", 0, 2), "adj1");
+        assert_eq!(guide_name("roundRect", 1, 2), "adj2");
+        // Written names never collide, one slot past the known guides included.
+        for p in CATALOG {
+            let total = p.defaults.len() + 1;
+            let mut names: Vec<String> = (0..total).map(|i| guide_name(p.name, i, total)).collect();
+            names.sort();
+            let n = names.len();
+            names.dedup();
+            assert_eq!(n, names.len(), "{}", p.name);
+        }
     }
 
     #[test]

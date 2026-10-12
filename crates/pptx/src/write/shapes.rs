@@ -100,9 +100,11 @@ pub fn geometry(w: &mut W, g: &Geom) {
                     vals.push(defaults.get(vals.len()).copied().unwrap_or(0.0));
                 }
                 w.open0("a:avLst");
-                let single = if defaults.is_empty() { vals.len() == 1 } else { defaults.len() == 1 };
                 for (i, v) in vals.iter().enumerate() {
-                    let n = if single && i == 0 { "adj".to_string() } else { format!("adj{}", i + 1) };
+                    // Guide names come from the preset's ECMA-376 definition: e.g.
+                    // `bentConnector3` names its only guide `adj1`, and writing `adj`
+                    // there makes PowerPoint refuse the file (#214).
+                    let n = deckcraft_geom::preset::guide_name(name, i, vals.len());
                     let v = if v.is_finite() { v.round().clamp(-2.0e9, 2.0e9) as i64 } else { 0 };
                     w.empty("a:gd", A::new().a("name", n).a("fmla", format!("val {v}")));
                 }
@@ -737,5 +739,31 @@ mod tests {
         let mut w = W::frag();
         geometry(&mut w, &Geom::Preset { name: "textBox".into(), adj: vec![] });
         assert_eq!(w.s, r#"<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>"#);
+    }
+
+    /// The guide name comes from the preset's ECMA-376 definition, not from the
+    /// guide count: `bentConnector3` names its only guide `adj1`, and writing
+    /// `adj` there makes PowerPoint refuse the whole file (issue #214).
+    #[test]
+    fn preset_guides_use_canonical_names() {
+        let mut w = W::frag();
+        geometry(&mut w, &Geom::Preset { name: "bentConnector3".into(), adj: vec![30000.0] });
+        assert_eq!(w.s, r#"<a:prstGeom prst="bentConnector3"><a:avLst><a:gd name="adj1" fmla="val 30000"/></a:avLst></a:prstGeom>"#);
+        for p in ["curvedConnector3", "frame", "mathPlus", "mathMinus", "mathMultiply"] {
+            let mut w = W::frag();
+            geometry(&mut w, &Geom::Preset { name: p.into(), adj: vec![30000.0] });
+            assert!(w.s.contains(r#"name="adj1""#) && !w.s.contains(r#"name="adj""#), "{p}: {}", w.s);
+        }
+        // Hexagon's guides are `adj` and the factor guide `vf`, per the definition.
+        let mut w = W::frag();
+        geometry(&mut w, &Geom::Preset { name: "hexagon".into(), adj: vec![20000.0] });
+        assert_eq!(
+            w.s,
+            r#"<a:prstGeom prst="hexagon"><a:avLst><a:gd name="adj" fmla="val 20000"/><a:gd name="vf" fmla="val 115470"/></a:avLst></a:prstGeom>"#
+        );
+        // A rounded rectangle's lone guide really is `adj`.
+        let mut w = W::frag();
+        geometry(&mut w, &Geom::Preset { name: "roundRect".into(), adj: vec![30000.0] });
+        assert_eq!(w.s, r#"<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 30000"/></a:avLst></a:prstGeom>"#);
     }
 }

@@ -367,6 +367,14 @@ fn round(p: &Presentation) -> Presentation {
     deckcraft_pptx::import(&bytes).expect("import")
 }
 
+fn part_xml(bytes: &[u8], name: &str) -> String {
+    use std::io::Read;
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("zip");
+    let mut out = String::new();
+    z.by_name(name).expect("part").read_to_string(&mut out).expect("utf8");
+    out
+}
+
 fn by_name<'a>(s: &'a Slide, name: &str) -> &'a Shape {
     let mut found = None;
     deckcraft_model::walk(&s.shapes, &mut |x, _| {
@@ -467,6 +475,26 @@ fn shapes_fills_lines_effects_round_trip() {
     assert_eq!(c.line, by_name(&p.slides[1], "Connector").line);
     // Ids are kept.
     assert_eq!(by_name(&q.slides[1], "Group").id, by_name(&p.slides[1], "Group").id);
+}
+
+/// The written guide names follow the preset's ECMA-376 definition, so
+/// PowerPoint accepts the file again (issue #214).
+#[test]
+fn preset_guide_names_round_trip() {
+    let mut p = rich_deck();
+    let mut cx = shape(&mut p, "Adjusted Elbow", 450.0, 300.0, 150.0, 0.0);
+    cx.geom = Geom::Preset { name: "bentConnector3".into(), adj: vec![30000.0] };
+    Arc::make_mut(&mut p.slides[1]).shapes.push(cx);
+    let bytes = deckcraft_pptx::export(&p).expect("export");
+    let xml = part_xml(&bytes, "ppt/slides/slide2.xml");
+    assert!(
+        xml.contains(r#"<a:prstGeom prst="bentConnector3"><a:avLst><a:gd name="adj1" fmla="val 30000"/>"#),
+        "guide renamed: {}",
+        part_xml(&bytes, "ppt/slides/slide2.xml")
+    );
+    let q = deckcraft_pptx::import(&bytes).expect("import");
+    let (a, b) = (by_name(&p.slides[1], "Adjusted Elbow"), by_name(&q.slides[1], "Adjusted Elbow"));
+    assert_eq!(a.geom, b.geom);
 }
 
 #[test]
