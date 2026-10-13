@@ -132,6 +132,8 @@ fn list(app: &mut SlideApp, ui: &mut Ui) {
             );
         }
         if resp.clicked() {
+            // Select All now works the slides (#188), until the canvas is worked again.
+            app.slides_pane_active = true;
             let (shift, cmd) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
             if let Some(id) = id {
                 if cmd {
@@ -151,6 +153,7 @@ fn list(app: &mut SlideApp, ui: &mut Ui) {
             app.start_show(i, false);
         }
         if resp.drag_started() {
+            app.slides_pane_active = true;
             app.thumb_drag = Some((i, i));
         }
         resp.context_menu(|ui| slide_menu(app, ui, i));

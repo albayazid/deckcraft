@@ -377,10 +377,21 @@ fn pointer(app: &mut SlideApp, ui: &Ui, resp: &egui::Response, xf: Xf) {
         let _ = app.session.pointer(ev(PointerKind::Move));
     }
     let r = if resp.triple_clicked() {
+        app.slides_pane_active = false;
         app.session.pointer(ev(PointerKind::TripleClick))
     } else if resp.double_clicked() {
+        app.slides_pane_active = false;
         app.session.pointer(ev(PointerKind::DoubleClick))
     } else if primary && resp.hovered() && !resp.secondary_clicked() && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary)) {
+        // The canvas owns Select All again (it takes in the shapes, not the slides). The pane's
+        // multi-selection collapses to the current slide, so a Delete meant for a shape can
+        // never sweep the deck afterwards.
+        app.slides_pane_active = false;
+        if app.session.active().is_some_and(|d| d.selection.slides.len() > 1)
+            && let Some(cur) = app.session.active().and_then(|d| d.doc.slides.get(d.selection.slide)).map(|s| vec![s.id.0])
+        {
+            let _ = app.session.execute("slide.selectSlides", &json!({"ids": cur}));
+        }
         app.session.pointer(ev(PointerKind::Down))
     } else if resp.dragged_by(egui::PointerButton::Primary) || (app.session.tool.dragging() && ui.input(|i| i.pointer.primary_down())) {
         app.session.pointer(ev(PointerKind::Drag))

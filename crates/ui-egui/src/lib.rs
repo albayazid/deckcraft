@@ -227,6 +227,9 @@ pub struct SlideApp {
     pub(crate) thumb_drag: Option<(usize, usize)>,
     /// Selection pane: folded groups, renaming, drag and drop.
     pub selpane: selpane::State,
+    /// The pointer last worked the slides pane (thumbnail column), so Select All takes in the
+    /// slides, as in PowerPoint. Cleared by canvas interaction. Not persisted.
+    slides_pane_active: bool,
 }
 
 impl SlideApp {
@@ -267,6 +270,7 @@ impl SlideApp {
             ui_fonts: uifonts::UiFonts::default(),
             thumb_drag: None,
             selpane: selpane::State::default(),
+            slides_pane_active: false,
         }
     }
 
@@ -282,6 +286,9 @@ impl SlideApp {
     /// Run a command by id (UI commands here, everything else in the engine). Errors show in the
     /// status bar and are returned.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if id == "file.new" {
+            self.slides_pane_active = false; // a new deck starts on the canvas
+        }
         let r = if UI_COMMANDS.iter().any(|c| c.0 == id) {
             self.run_ui(id, &params)
         } else {
@@ -573,6 +580,7 @@ impl SlideApp {
 
     pub fn open_path(&mut self, path: &str) -> Result<(), String> {
         self.session.execute("file.open", &json!({"path": path})).map_err(|e| e.to_string())?;
+        self.slides_pane_active = false; // a new deck starts on the canvas
         self.ui.recent.retain(|p| p != path);
         self.ui.recent.insert(0, path.to_string());
         self.ui.recent.truncate(12);
@@ -911,6 +919,29 @@ impl SlideApp {
                 egui::Event::Key { key, pressed: true, modifiers, .. } => {
                     let mods = Mods { shift: modifiers.shift, alt: modifiers.alt, cmd: modifiers.command || modifiers.ctrl };
                     if !self.session.tool.drawing_freeform() && menus::ui_shortcut(self, key, mods) {
+                        continue;
+                    }
+                    // Select All follows the pane, as in PowerPoint: over the slides pane or in
+                    // the sorter it takes in every slide; on the canvas the engine's
+                    // edit.selectAll picks the shapes (#188). The flag only counts where the
+                    // pane exists, and never while text is being edited or a master is — those
+                    // fall through to the engine. The Edit menu's Select All and the
+                    // MCP/control-channel keys stay engine-only on purpose: they have no pane.
+                    let over_slides =
+                        self.ui.view == ViewMode::Sorter || (self.slides_pane_active && matches!(self.ui.view, ViewMode::Normal | ViewMode::Reading));
+                    if key == egui::Key::A
+                        && mods.cmd
+                        && !mods.shift
+                        && !mods.alt
+                        && over_slides
+                        && self.session.active().is_some_and(|d| {
+                            !d.doc.slides.is_empty() && d.selection.text.is_none() && d.selection.target == deckcraft_engine::Target::Slides
+                        })
+                    {
+                        let ids: Vec<u32> = self.session.active().map(|d| d.doc.slides.iter().map(|s| s.id.0).collect()).unwrap_or_default();
+                        if let Err(e) = self.session.execute("slide.selectSlides", &json!({"ids": ids})) {
+                            self.set_status(e.to_string());
+                        }
                         continue;
                     }
                     let name = key_name(key);
@@ -1407,5 +1438,69 @@ mod tests {
         let n = app.textures.canvas_renders;
         harness.run_steps(3);
         assert_eq!(harness.state().textures.canvas_renders, n, "an unchanged slide isn't rendered again");
+    }
+
+    fn slides_harness(slides: usize) -> egui_kittest::Harness<'static, SlideApp> {
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(Session::with_new(), Services::default()),
+        );
+        for _ in 1..slides {
+            harness.state_mut().session.execute("slide.new", &json!({})).unwrap();
+        }
+        harness
+    }
+
+    /// #188: Select All follows the pane, as in PowerPoint — over the slides pane it takes in
+    /// every slide, on the canvas it stays with the shapes, and a canvas press collapses the
+    /// pane's selection so a Delete meant for a shape can't sweep the deck.
+    #[test]
+    fn select_all_follows_the_slides_pane() {
+        let mut harness = slides_harness(3);
+        harness.run_steps(2);
+        // On the canvas: every shape, and the slide selection untouched.
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        harness.run_steps(2);
+        let d = harness.state().session.active().unwrap();
+        assert_eq!(d.selection.slides.len(), 1, "canvas select all leaves the slide selection");
+        assert!(!d.selection.shapes.is_empty(), "canvas select all selects the shapes");
+        // After working the slides pane: every slide.
+        harness.state_mut().slides_pane_active = true;
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        harness.run_steps(2);
+        let d = harness.state().session.active().unwrap();
+        assert_eq!(d.selection.slides.len(), 3, "{}", d.selection.slides.len());
+        assert!(d.selection.shapes.is_empty(), "the shapes give way to the slide selection");
+        // A press on the canvas (the real path) collapses the pane's selection and hands
+        // Select All back to the shapes.
+        let canvas = harness.state().canvas_rect.expect("canvas rect after a frame");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: canvas.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        harness.event(press(true));
+        harness.event(press(false));
+        harness.run_steps(2);
+        let d = harness.state().session.active().unwrap();
+        assert_eq!(d.selection.slides.len(), 1, "the pane's multi-selection collapses on a canvas press");
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        harness.run_steps(2);
+        assert!(!harness.state().session.active().unwrap().selection.shapes.is_empty());
+    }
+
+    /// In the sorter, Select All always works the slides.
+    #[test]
+    fn select_all_in_the_sorter_takes_every_slide() {
+        let mut harness = slides_harness(3);
+        harness.state_mut().ui.view = ViewMode::Sorter;
+        harness.run_steps(2);
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        harness.run_steps(2);
+        assert_eq!(harness.state().session.active().unwrap().selection.slides.len(), 3);
     }
 }
