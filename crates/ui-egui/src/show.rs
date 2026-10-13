@@ -792,7 +792,13 @@ fn presenter_window(ctx: &egui::Context, show: &mut Show, doc: &Presentation, no
     let mut actions = vec![];
     ctx.show_viewport_immediate(
         egui::ViewportId::from_hash_of("deckcraft_presenter"),
-        egui::ViewportBuilder::default().with_title("Presenter View — DeckCraft").with_inner_size([1100.0, 700.0]),
+        // The presenter must never take the keyboard from the show: it opens over the fullscreen
+        // window at the start, and a new window that activates itself leaves the show's arrows
+        // dead until a click refocuses it (#237). winit honours this only on Windows and macOS;
+        // on X11 and Wayland the activation is the window manager's, and there only forwarding
+        // the show's keys into the presenter viewport or moving the presenter to the second
+        // display (the gaps list, #9) can help.
+        egui::ViewportBuilder::default().with_title("Presenter View — DeckCraft").with_inner_size([1100.0, 700.0]).with_active(false),
         |ui, _| {
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::from_gray(24)).inner_margin(egui::Margin::same(16))).show(ui, |ui| {
                 ui.horizontal(|ui| {

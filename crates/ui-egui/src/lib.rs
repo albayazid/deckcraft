@@ -1408,4 +1408,27 @@ mod tests {
         harness.run_steps(3);
         assert_eq!(harness.state().textures.canvas_renders, n, "an unchanged slide isn't rendered again");
     }
+
+    /// The show answers the arrows from its first frame — nothing may gate the keys while the
+    /// show is up (#237).
+    #[test]
+    fn show_keys_work_from_the_first_slide() {
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(Session::with_new(), Services::default()),
+        );
+        harness.state_mut().session.execute("slide.new", &json!({})).unwrap();
+        harness.run_steps(2);
+        harness.state_mut().start_show(0, false);
+        harness.run_steps(3);
+        let show = harness.state().show.as_ref().expect("show running");
+        assert_eq!(show.state.slide, 0, "starts at slide 1");
+        harness.key_press(egui::Key::ArrowRight);
+        harness.run_steps(2);
+        let show = harness.state().show.as_ref().expect("show still running");
+        assert_eq!(show.state.slide, 1, "arrow advanced to slide 2");
+    }
 }

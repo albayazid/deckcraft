@@ -1,6 +1,6 @@
 # Slide show and presenter view: parity with PowerPoint
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (created; measured from `crates/ui-egui/src/show.rs` and `crates/anim/src/show.rs` against PowerPoint 16.113's Slide Show tab and menu) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (presenter window opens without activating on Windows and macOS, #237) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
 
 Presenting is the job PowerPoint is hired for. This doc covers the show window, presenter view,
 rehearsal and recording. Transition and animation playback are in
@@ -35,7 +35,7 @@ ready** (estimated), **10–16 h** to parity.
 
 | Feature | PowerPoint | DeckCraft | Notes |
 |---|---|---|---|
-| Separate presenter window with current slide, next slide, notes | yes | yes (an egui viewport, 1100×700) | |
+| Separate presenter window with current slide, next slide, notes | yes | yes (an egui viewport, 1100×700; opens without taking the show's keyboard on Windows and macOS, #237) | |
 | Elapsed timer | yes | yes | |
 | Pause / reset timer, clock | yes | no | |
 | Slide counter, previous/next/end buttons | yes | yes | |
