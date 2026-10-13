@@ -7,6 +7,7 @@ use deckcraft_model::{
     AnimClass, AnimStart, Animation, ColorRef, CustomShow, Presentation, Rgba, Shape, ShapeId, Slide, SlideId, TextBody, Transition, Xfrm,
 };
 
+use crate::timeline::MAX_EFFECTS;
 use crate::*;
 
 const W: f64 = 960.0;
@@ -788,4 +789,31 @@ fn show_follows_links() {
     assert_eq!(s.follow(&p, &Action::Slide { slide: SlideId(9) }, None), LinkJump::None, "a link to a deleted slide does nothing");
     assert_eq!(s.follow(&p, &Action::LastViewed, None), LinkJump::None);
     assert_eq!(s.slide, 3);
+}
+
+/// #410: slides with many distinct triggers build in bounded time and keep first-appearance
+/// sequence order — discovery used to rescan the whole slide for every sequence, quadratically.
+#[test]
+fn many_distinct_triggers_build_in_order_and_bounded() {
+    let n = 100_050usize; // fifty past the effect cap: order, the cap and mid-sequence truncation are pinned
+    let mut slide = Slide::default();
+    for i in 0..n {
+        let id = ShapeId(i as u32 + 10);
+        slide.shapes.push(Shape { id, ..Default::default() });
+        slide.animations.push(Animation { shape: id, trigger: Some(id), effect: "fade".into(), ..Default::default() });
+    }
+    let t0 = std::time::Instant::now();
+    let tl = Timeline::new(&slide, 960.0, 540.0);
+    let elapsed = t0.elapsed();
+    // The effect cap holds and slide order is preserved: effect k is animation k.
+    let effects = tl.effects();
+    assert_eq!(effects.len(), MAX_EFFECTS, "capped at the effect limit");
+    for (k, e) in effects.iter().enumerate() {
+        if e.anim != k {
+            panic!("effect {k} points at animation {}; slide order was lost", e.anim);
+        }
+    }
+    // The effect cap leaves the last few sequences unprocessed: as many triggers as effects.
+    assert_eq!(tl.trigger_shapes().len(), MAX_EFFECTS, "every processed sequence has its trigger");
+    assert!(elapsed.as_secs() < 15, "quadratic discovery: building took {elapsed:?}");
 }

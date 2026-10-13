@@ -1,5 +1,7 @@
 //! A slide's animation sequence: click steps, effect start times and per-shape state over time.
 
+use std::collections::{HashMap, HashSet};
+
 use deckcraft_model::anim::TextBuild;
 use deckcraft_model::style::Fill;
 use deckcraft_model::{AnimClass, AnimStart, Animation, ColorScheme, Rgba, SchemeSlot, ShapeId, Slide, Xfrm};
@@ -9,7 +11,7 @@ use crate::effects::{EffectSpec, exit_base, motion_path};
 
 /// Delay between paragraphs of a by-paragraph build that isn't on click (seconds).
 pub const PARAGRAPH_STAGGER: f64 = 0.5;
-const MAX_EFFECTS: usize = 100_000;
+pub(crate) const MAX_EFFECTS: usize = 100_000;
 const MAX_PARAGRAPHS: usize = 1_000;
 const MAX_ITERATIONS: f64 = 1.0e6;
 
@@ -151,29 +153,48 @@ impl Timeline {
         let accent = scheme.map(|s| s.get(SchemeSlot::Accent1)).unwrap_or(Rgba::rgb(0x15, 0x60, 0x82));
 
         let mut tl = Timeline::default();
-        // Sequences in order of first appearance: main first.
-        let mut seqs: Vec<Sequence> = vec![Sequence::Main];
-        for a in &slide.animations {
-            if let Some(tr) = a.trigger {
-                let s = Sequence::Trigger(tr);
-                if !seqs.contains(&s) {
-                    seqs.push(s);
-                }
-            }
+        // Group the animations by sequence in one pass, keeping first-appearance order (main
+        // first) and slide order within each sequence: rescanning every animation for every
+        // sequence made slides with many distinct triggers quadratic to build (#410).
+        let mut order: Vec<Sequence> = vec![Sequence::Main];
+        let mut groups: HashMap<Sequence, Vec<usize>> = HashMap::new();
+        for (ai, a) in slide.animations.iter().enumerate() {
+            let seq = a.trigger.map(Sequence::Trigger).unwrap_or(Sequence::Main);
+            groups
+                .entry(seq)
+                .or_insert_with(|| {
+                    if seq != Sequence::Main {
+                        order.push(seq);
+                    }
+                    Vec::new()
+                })
+                .push(ai);
         }
-        for seq in seqs {
+        // Shape lookup by id, built once: Slide::shape walks the whole tree per animation,
+        // which is its own quadratic on slides with many shapes (#410).
+        let mut by_id: HashMap<ShapeId, &deckcraft_model::Shape> = HashMap::new();
+        deckcraft_model::walk(&slide.shapes, &mut |sh: &deckcraft_model::Shape, _| {
+            by_id.entry(sh.id).or_insert(sh);
+        });
+        let mut seen_groups: HashSet<(ShapeId, usize, usize)> = HashSet::new();
+        for seq in order {
+            let Some(members) = groups.get(&seq) else { continue };
             let mut steps: Vec<StepInfo> = Vec::new();
             let mut group_begin = 0.0f64;
             let mut max_end = 0.0f64;
-            for (ai, a) in slide.animations.iter().enumerate() {
-                let aseq = a.trigger.map(Sequence::Trigger).unwrap_or(Sequence::Main);
-                if aseq != seq {
-                    continue;
-                }
+            // The effect cap is global: once it is reached no sequence can add more, so stop
+            // before scanning any further. Triggers of the sequences left out are dropped with
+            // it (#410).
+            if tl.effects.len() >= MAX_EFFECTS {
+                break;
+            }
+            for &ai in members {
+                // Truncate mid-sequence, exactly as before: one sequence may carry many effects.
                 if tl.effects.len() >= MAX_EFFECTS {
                     break;
                 }
-                let shape = slide.shape(a.shape);
+                let a = &slide.animations[ai];
+                let shape = by_id.get(&a.shape).copied();
                 // Paragraph targets of this animation.
                 let paras: Vec<Option<usize>> = match (a.paragraph, a.text_build) {
                     (Some(p), _) => vec![Some(p as usize)],
@@ -188,8 +209,9 @@ impl Timeline {
                                     owner = Some(i);
                                     v.push(Some(i));
                                 } else if let Some(o) = owner
-                                    && !tl.groups.contains(&(a.shape, i, o))
+                                    && !seen_groups.contains(&(a.shape, i, o))
                                 {
+                                    seen_groups.insert((a.shape, i, o));
                                     tl.groups.push((a.shape, i, o));
                                 }
                             }
@@ -277,13 +299,16 @@ impl Timeline {
                 Sequence::Trigger(s) => tl.triggers.push((s, steps)),
             }
         }
-        // Base colours of animated shapes.
+        // Base colours of animated shapes: a set keeps this linear in the effect count, like the
+        // grouping above (#410).
+        let mut coloured: HashSet<ShapeId> = HashSet::new();
         for e in &tl.effects {
             let id = e.timing.shape;
-            if tl.colors.iter().any(|(s, _)| *s == id) {
+            if coloured.contains(&id) {
                 continue;
             }
-            let c = match slide.shape(id).and_then(|s| s.fill.as_ref()) {
+            coloured.insert(id);
+            let c = match by_id.get(&id).and_then(|s| s.fill.as_ref()) {
                 Some(Fill::Solid { color }) => resolve(color),
                 _ => accent,
             };
