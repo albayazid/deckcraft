@@ -95,11 +95,13 @@ fn str_cache(w: &mut W, f: &str, vals: &[String]) {
     w.close("c:strRef");
 }
 
-fn num_cache(w: &mut W, f: &str, vals: &[Option<f64>]) {
+fn num_cache(w: &mut W, f: &str, vals: &[Option<f64>], format: &str) {
     w.open0("c:numRef");
     w.elt("c:f", f);
     w.open0("c:numCache");
-    w.elt("c:formatCode", "General");
+    // The values' own format code, as the file had it: the cached numbers are read with it
+    // when the workbook is missing (#1046).
+    w.elt("c:formatCode", format);
     w.val("c:ptCount", vals.len());
     for (i, v) in vals.iter().enumerate() {
         if let Some(v) = v.filter(|v| v.is_finite()) {
@@ -217,7 +219,7 @@ fn series(w: &mut W, c: &Chart, s: &Series, i: usize, kind: ChartType, g: Group)
         }
     }
     if let Some(d) = s.data_labels {
-        data_labels(w, d);
+        data_labels(w, d, s.own_label_format.as_deref());
     }
     // After labels, before the category and value caches (ECMA-376 series content order).
     if matches!(g, Group::Bar | Group::Line | Group::Area | Group::Scatter) {
@@ -252,15 +254,15 @@ fn series(w: &mut W, c: &Chart, s: &Series, i: usize, kind: ChartType, g: Group)
     if matches!(g, Group::Scatter | Group::Bubble) {
         let xs: Vec<Option<f64>> = if s.x_values.is_empty() { (1..=s.values.len()).map(|v| Some(v as f64)).collect() } else { s.x_values.clone() };
         w.open0("c:xVal");
-        num_cache(w, &format!("Sheet1!$A$2:$A${last}"), &xs);
+        num_cache(w, &format!("Sheet1!$A$2:$A${last}"), &xs, c.value_format(s));
         w.close("c:xVal");
         w.open0("c:yVal");
-        num_cache(w, &format!("Sheet1!${0}$2:${0}${last}", col(i + 1)), &s.values);
+        num_cache(w, &format!("Sheet1!${0}$2:${0}${last}", col(i + 1)), &s.values, c.value_format(s));
         w.close("c:yVal");
         if g == Group::Bubble {
             let sizes: Vec<Option<f64>> = if s.sizes.is_empty() { s.values.iter().map(|_| Some(1.0)).collect() } else { s.sizes.clone() };
             w.open0("c:bubbleSize");
-            num_cache(w, &format!("Sheet1!${0}$2:${0}${last}", col(i + 2)), &sizes);
+            num_cache(w, &format!("Sheet1!${0}$2:${0}${last}", col(i + 2)), &sizes, c.value_format(s));
             w.close("c:bubbleSize");
             w.val("c:bubble3D", 0);
         } else {
@@ -271,7 +273,7 @@ fn series(w: &mut W, c: &Chart, s: &Series, i: usize, kind: ChartType, g: Group)
         str_cache(w, &format!("Sheet1!$A$2:$A${last}"), &c.categories);
         w.close("c:cat");
         w.open0("c:val");
-        num_cache(w, &format!("Sheet1!${0}$2:${0}${last}", col(i + 1)), &s.values);
+        num_cache(w, &format!("Sheet1!${0}$2:${0}${last}", col(i + 1)), &s.values, c.value_format(s));
         w.close("c:val");
         if g == Group::Line {
             w.val("c:smooth", if s.smooth { 1 } else { 0 });
@@ -325,7 +327,7 @@ fn trendline(w: &mut W, t: &Trendline) {
     w.close("c:trendline");
 }
 
-fn data_labels(w: &mut W, show: bool) {
+fn data_labels(w: &mut W, show: bool, format: Option<&str>) {
     w.open0("c:dLbls");
     for (n, v) in [
         ("c:showLegendKey", false),
@@ -336,6 +338,10 @@ fn data_labels(w: &mut W, show: bool) {
         ("c:showBubbleSize", false),
     ] {
         w.val(n, if v { 1 } else { 0 });
+    }
+    // The labels' own number format, as the file had it (#1046).
+    if let Some(f) = format.filter(|f| !f.is_empty()) {
+        w.empty("c:numFmt", A::new().a("formatCode", f).a("sourceLinked", 0));
     }
     w.close("c:dLbls");
 }
@@ -467,8 +473,11 @@ fn plot_group(w: &mut W, c: &Chart, kind: ChartType, list: &[(usize, &Series)]) 
     for (i, s) in list {
         series(w, c, s, *i, kind, g);
     }
+    // The chart group's own data labels, after its series (ECMA-376 chart group content order:
+    // c:barDir, c:grouping, c:varyColors, c:ser, c:dLbls, c:gapWidth ...). They are the
+    // default the series that carry labels of their own replace.
     if c.data_labels {
-        data_labels(w, true);
+        data_labels(w, true, c.label_format.as_deref());
     }
     match g {
         Group::Bar => {
