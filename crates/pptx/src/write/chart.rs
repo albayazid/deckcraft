@@ -74,10 +74,31 @@ fn rich(w: &mut W, text: &str) {
     w.close("c:tx");
 }
 
+/// A chart's text properties: the size in points (hundredths of a point in the file) the
+/// element's text is drawn at, as PowerPoint writes them (`c:txPr`).
+fn tx_pr(w: &mut W, size: Option<f64>) {
+    let Some(sz) = size.filter(|s| s.is_finite() && *s > 0.0) else { return };
+    w.open0("c:txPr");
+    w.open0("a:bodyPr");
+    w.close("a:bodyPr");
+    w.open0("a:p");
+    w.open0("a:pPr");
+    w.empty("a:defRPr", A::new().a("sz", (sz.clamp(1.0, 400.0) * 100.0).round() as i64));
+    w.close("a:pPr");
+    w.close("a:p");
+    w.close("c:txPr");
+}
+
 fn title(w: &mut W, text: &str) {
+    title_sized(w, text, None);
+}
+
+/// A title, with the text size the file gave it (`c:txPr`, after `c:tx`).
+fn title_sized(w: &mut W, text: &str, size: Option<f64>) {
     w.open0("c:title");
     rich(w, text);
     w.val("c:overlay", 0);
+    tx_pr(w, size);
     w.close("c:title");
 }
 
@@ -219,7 +240,7 @@ fn series(w: &mut W, c: &Chart, s: &Series, i: usize, kind: ChartType, g: Group)
         }
     }
     if let Some(d) = s.data_labels {
-        data_labels(w, d, s.own_label_format.as_deref());
+        data_labels(w, d, s.own_label_format.as_deref(), s.label_size);
     }
     // After labels, before the category and value caches (ECMA-376 series content order).
     if matches!(g, Group::Bar | Group::Line | Group::Area | Group::Scatter) {
@@ -327,7 +348,7 @@ fn trendline(w: &mut W, t: &Trendline) {
     w.close("c:trendline");
 }
 
-fn data_labels(w: &mut W, show: bool, format: Option<&str>) {
+fn data_labels(w: &mut W, show: bool, format: Option<&str>, size: Option<f64>) {
     w.open0("c:dLbls");
     for (n, v) in [
         ("c:showLegendKey", false),
@@ -343,6 +364,8 @@ fn data_labels(w: &mut W, show: bool, format: Option<&str>) {
     if let Some(f) = format.filter(|f| !f.is_empty()) {
         w.empty("c:numFmt", A::new().a("formatCode", f).a("sourceLinked", 0));
     }
+    // Their own text size, as the file had it (#1046).
+    tx_pr(w, size);
     w.close("c:dLbls");
 }
 
@@ -364,6 +387,8 @@ fn axes(w: &mut W, c: &Chart, g: Group) {
             title(w, t);
         }
         w.empty("c:numFmt", A::new().a("formatCode", "General").a("sourceLinked", 1));
+        // The axis labels' text size, as the file had it (#1046).
+        tx_pr(w, c.text_size);
         w.val("c:majorTickMark", "out");
         w.val("c:minorTickMark", "none");
         w.val("c:tickLblPos", "nextTo");
@@ -383,6 +408,8 @@ fn axes(w: &mut W, c: &Chart, g: Group) {
             title(w, t);
         }
         w.empty("c:numFmt", A::new().a("formatCode", "General").a("sourceLinked", 1));
+        // The axis labels' text size, as the file had it (#1046).
+        tx_pr(w, c.text_size);
         w.val("c:majorTickMark", "none");
         w.val("c:minorTickMark", "none");
         w.val("c:tickLblPos", "nextTo");
@@ -423,6 +450,8 @@ fn axes(w: &mut W, c: &Chart, g: Group) {
         Some(f) => w.empty("c:numFmt", A::new().a("formatCode", f).a("sourceLinked", 0)),
         None => w.empty("c:numFmt", A::new().a("formatCode", if c.kind.percent() { "0%" } else { "General" }).a("sourceLinked", 1)),
     }
+    // The axis labels' text size, as the file had it (#1046).
+    tx_pr(w, c.text_size);
     w.val("c:majorTickMark", "none");
     w.val("c:minorTickMark", "none");
     w.val("c:tickLblPos", "nextTo");
@@ -477,7 +506,7 @@ fn plot_group(w: &mut W, c: &Chart, kind: ChartType, list: &[(usize, &Series)]) 
     // c:barDir, c:grouping, c:varyColors, c:ser, c:dLbls, c:gapWidth ...). They are the
     // default the series that carry labels of their own replace.
     if c.data_labels {
-        data_labels(w, true, c.label_format.as_deref());
+        data_labels(w, true, c.label_format.as_deref(), c.label_size);
     }
     match g {
         Group::Bar => {
@@ -585,7 +614,8 @@ pub fn chart_xml(c: &Chart) -> (Vec<u8>, bool) {
     w.open0("c:chart");
     match &c.title {
         Some(t) => {
-            title(&mut w, t);
+            // The title's own text size, as the file had it (#1046).
+            title_sized(&mut w, t, c.title_size);
             w.val("c:autoTitleDeleted", 0);
         }
         None => w.val("c:autoTitleDeleted", 1),
@@ -663,6 +693,8 @@ pub fn chart_xml(c: &Chart) -> (Vec<u8>, bool) {
         w.open0("c:legend");
         w.val("c:legendPos", p);
         w.val("c:overlay", u8::from(c.legend_overlay));
+        // The legend's own text size, as the file had it (#1046).
+        tx_pr(&mut w, c.legend_size);
         w.close("c:legend");
     }
     w.val("c:plotVisOnly", 1);
